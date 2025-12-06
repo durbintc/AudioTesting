@@ -1,13 +1,23 @@
 "use strict";
 
-import {initFileShaders, perspective, vec2, vec4, mat4, flatten, lookAt, rotateX, rotateY} from '../helperfunctions.js';
+import {
+    initFileShaders,
+    perspective,
+    vec2,
+    vec4,
+    mat4,
+    flatten,
+    lookAt,
+    rotateX,
+    rotateY,
+    translate, scalem
+} from '../helperfunctions.js';
 let gl:WebGLRenderingContext;
 let program:WebGLProgram;
-let activeProgram:WebGLProgram;
-let anisotropic_ext:EXT_texture_filter_anisotropic; //TODO next week...
 
-let checkerTex:WebGLTexture;
-
+let marbleTex:WebGLTexture;
+let graphTex:WebGLTexture;
+let turbTex:WebGLTexture;
 
 //uniform locations
 let umv:WebGLUniformLocation; //uniform for mv matrix
@@ -32,11 +42,45 @@ let yAngle:number;
 let mouse_button_down:boolean = false;
 let prevMouseX:number = 0;
 let prevMouseY:number = 0;
-let zoom:number = 45;
+let zoom:number = 25;
 
-let noiseWidth = 128;
-let noiseHeight = 128;
+let noiseWidth = 512;
+let noiseHeight = 512;
 let noise:number[][];
+
+let bass = 0;
+let mid = 0;
+let high = 0;
+
+let r = 0;
+let g = 0;
+let b = 0;
+let colorMode = false;
+
+let mode = [1,1,1];
+let marbleMode = true;
+let turbMode = false;
+
+let lowLimit = 100;
+let midLimit = 200;
+let highLimit = 300;
+
+const audioCtx = new AudioContext();
+const analyser = audioCtx.createAnalyser();
+analyser.fftSize = 1024;
+
+const bufferLength = analyser.frequencyBinCount;
+const dataArray = new Uint8Array(bufferLength);
+
+// *****************************************
+// Set to true to listen to spotify/mic data
+// (Requires extra setup and software)
+// Set too false to listen to mp3 in html
+// (No extra set up required)
+// *****************************************
+let spotify = true;
+
+let audioSource: MediaElementAudioSourceNode | MediaStreamAudioSourceNode;
 
 window.onload = function init() {
 
@@ -45,6 +89,26 @@ window.onload = function init() {
     if (!gl) {
         alert("WebGL isn't available");
     }
+
+    // Set up audio source AFTER page loads
+    if (spotify) {
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(stream => {
+                audioSource = audioCtx.createMediaStreamSource(stream);
+                audioSource.connect(analyser);
+                analyser.connect(audioCtx.destination);
+                console.log("Microphone connected!");
+            })
+            .catch(err => {
+                console.error("Microphone access denied:", err);
+            });
+    } else {
+        const audio = document.getElementById("music") as HTMLAudioElement;
+        audioSource = audioCtx.createMediaElementSource(audio);
+        audioSource.connect(analyser);
+        analyser.connect(audioCtx.destination);
+    }
+
     //allow the user to rotate mesh with the mouse
     canvas.addEventListener("mousedown", mouse_down);
     canvas.addEventListener("mousemove", mouse_drag);
@@ -66,13 +130,25 @@ window.onload = function init() {
     p = perspective(zoom, (canvas.clientWidth / canvas.clientHeight), 1, 20);
     gl.uniformMatrix4fv(uproj, false, p.flatten());
 
-    generateNoise();
-    initTexture(512, 512);
+    initBaseNoise();
+    marbleTex = initTexture(256, 256);
+    graphTex = initTexture(256, 256);
+    turbTex = initTexture(256, 256);
     makeSquareAndBuffer();
 
     //initialize rotation angles
     xAngle = 0;
     yAngle = 0;
+
+    document.getElementById("start")!.addEventListener("click", () => {
+        audioCtx.resume().then(() => {
+            if (!spotify) {
+                const audio = document.getElementById("music") as HTMLAudioElement;
+                audio.play();
+            }
+            console.log("Started!");
+        });
+    });
 
     window.addEventListener("keydown" ,event => {
         switch(event.key) {
@@ -86,35 +162,32 @@ window.onload = function init() {
                     zoom -= 5;
                 }
                 break;
-            case "l":
-                //TODO 2nd Coding activity:
-                //TODO try altering minification and magnification filters here
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);//try different min and mag filters
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,
-                    gl.REPEAT);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,
-                    gl.CLAMP_TO_EDGE);
+            case "r":
+                r++;
                 break;
-            case "n":
-               //TODO try altering minification and magnification filters here
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);//try different min and mag filters
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,
-                    gl.CLAMP_TO_EDGE);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,
-                    gl.CLAMP_TO_EDGE);
+            case "g":
+                g++;
                 break;
-            case "k":
-                //TODO 2nd Coding activity:
-                //TODO try altering minification and magnification filters here
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);//try different min and mag filters
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            case "b":
+                b++;
                 break;
             case "m":
-                //TODO try altering minification and magnification filters here
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);//try different min and mag filters
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                marbleMode = !marbleMode;
+                break;
+            case "c":
+                colorMode = !colorMode;
+                break;
+            case "t":
+                turbMode = !turbMode;
+                break;
+            case "1":
+                mode[0] ^= 1;
+                break;
+            case "2":
+                mode[1] ^= 1;
+                break;
+            case "3":
+                mode[2] ^= 1;
                 break;
         }
 
@@ -123,7 +196,7 @@ window.onload = function init() {
         requestAnimationFrame(render);//and now we need a new frame since we made a change
     });
 
-    window.setInterval(update, 16);
+    window.setInterval(update, 32);
     requestAnimationFrame(render);
 };
 
@@ -134,8 +207,8 @@ window.onload = function init() {
 function makeSquareAndBuffer(){
     let squarePoints:any[] = []; //empty array
 
-    let a = 1.5;
-    let b = 2;
+    let a = 1;
+    let b = 1;
 
     //create 4 vertices and add them to the array
     squarePoints.push(new vec4(-1, -1, 0, 1));
@@ -196,10 +269,12 @@ function mouse_up(){
 //Note here we're populating memory with colors using a math function
 //Next time we'll look at loading an image from a file
 // Generate a random noise field
-function generateNoise(): void {
-    noise = []; // Initialize the array
+
+// Call this once during init
+function initBaseNoise(): void {
+    noise = [];
     for (let y = 0; y < noiseHeight; y++){
-        noise[y] = []; // Initialize each row
+        noise[y] = [];
         for (let x = 0; x < noiseWidth; x++){
             noise[y][x] = Math.random();
         }
@@ -207,6 +282,7 @@ function generateNoise(): void {
 }
 
 // Smooth noise function
+// Linear interpolation for zooming in and out
 function smoothNoise(x: number, y: number): number {
     let fractX = x - Math.floor(x);
     let fractY = y - Math.floor(y);
@@ -227,6 +303,7 @@ function smoothNoise(x: number, y: number): number {
 }
 
 // Turbulence function (fixed)
+// Creates more natural features in smoothed noise by rerunning calculations on smaller and smaller subsections
 function turbulence(x: number, y: number, size: number): number {
     let value = 0.0;
     let initialSize = size;
@@ -239,48 +316,91 @@ function turbulence(x: number, y: number, size: number): number {
     return (128.0 * value / initialSize);
 }
 
-function initTexture(width: number, height: number): void {
-    checkerTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, checkerTex);
+function initTexture(width: number, height: number): WebGLTexture {
+    let texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-}
-
-
-// ----------------------------------------
-//  MARBLE TEXTURE
-// ----------------------------------------
-export function makeMarbleTexture(width: number, height: number): void {
-    generateNoise();
-    const pixels = new Uint8ClampedArray(width * height * 4);
-
-    const xPeriod = 5.0;
-    const yPeriod = 10.0;
-    const turbPower = 5.0;
-    const turbSize = 32.0;
-
-    for (let y = 0; y < height; y++){
-        for (let x = 0; x < width; x++){
-            let xyValue = x * xPeriod / noiseWidth + y * yPeriod / noiseHeight + turbPower * turbulence(x, y, turbSize) / 256.0;
-            let sineValue = 256 * Math.abs(Math.sin(xyValue * 3.14159));
-            let c = Math.floor(sineValue);
-
-            pixels[4*(width * y + x)] = c;
-            pixels[4*(width * y + x)+1] = c;
-            pixels[4*(width * y + x)+2] = c;
-            pixels[4*(width * y + x)+3] = 255;
-        }
-    }
-
-    gl.bindTexture(gl.TEXTURE_2D, checkerTex);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    return texture;
 }
 
 function update(){
-    generateNoise();
-    makeMarbleTexture(512, 512);
+    analyser.getByteFrequencyData(dataArray);
+
+    bass = dataArray.slice(0, lowLimit).reduce((a,b) => a+b, 0) / lowLimit / 255 * 2;
+    mid = dataArray.slice(lowLimit, midLimit).reduce((a,b) => a+b, 0) / (midLimit-lowLimit) / 255 * 2;
+    high = dataArray.slice(midLimit, highLimit).reduce((a,b) => a+b, 0) / (highLimit-midLimit) / 255 * 2;
+
+    // Calculate all textures in one pass with cached turbulence values
+    makeAllTextures(256, 256);
     requestAnimationFrame(render);
+}
+
+function makeAllTextures(width: number, height: number): void {
+    const marblePixels = new Uint8ClampedArray(width * height * 4);
+    const octavePixels = new Uint8ClampedArray(width * height * 4);
+    const graphPixels = new Uint8ClampedArray(width * height * 4);
+
+    // Marble constants
+    let xPeriod = 5.0;
+    let yPeriod = 10.0;
+    let turbPower = 2;
+
+    for (let y = 0; y < height; y++){
+        for (let x = 0; x < width; x++){
+            // Calculate turbulence values ONCE per pixel
+            let bassNoise = mode[0] ? turbulence(x, y, 64) * bass : 0;
+            let midNoise = mode[1] ? turbulence(x, y, 16) * mid : 0;
+            let highNoise = mode[2] ? turbulence(x, y, 4) * high : 0;
+            let combinedTurb = bassNoise + midNoise + highNoise;
+
+            let idx = 4 * (width * y + x);
+
+            // MARBLE TEXTURE
+            let xyValue = x * xPeriod / noiseWidth + y * yPeriod / noiseHeight + turbPower * combinedTurb / 256.0;
+            let sineValue = 256 * Math.abs(Math.sin(xyValue * 3.14159));
+            let c = turbMode ? Math.floor(combinedTurb) : Math.floor(sineValue);
+
+            let cr = colorMode ? bass * 100 : 0;
+            let cg = colorMode ? mid * 100 : 0;
+            let cb = colorMode ? high * 100 : 0;
+
+            marblePixels[idx] = cr + c + r;
+            marblePixels[idx + 1] = cg + c + g;
+            marblePixels[idx + 2] = cb + c + b;
+            marblePixels[idx + 3] = 255;
+
+            // OCTAVE TEXTURE
+            octavePixels[idx] = Math.floor(bassNoise);
+            octavePixels[idx + 1] = Math.floor(midNoise);
+            octavePixels[idx + 2] = Math.floor(highNoise);
+            octavePixels[idx + 3] = 255;
+
+            // GRAPH TEXTURE (frequency visualization)
+            let audioIndex = Math.floor((x / width) * bufferLength);
+            let value = dataArray[audioIndex];
+            let barHeight = (value / 255) * height;
+            let brightness = y < barHeight ? value : 0;
+
+            graphPixels[idx] = brightness;
+            graphPixels[idx + 1] = brightness;
+            graphPixels[idx + 2] = brightness;
+            graphPixels[idx + 3] = 255;
+        }
+    }
+
+    // Upload all textures
+    gl.bindTexture(gl.TEXTURE_2D, marbleTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, marblePixels);
+
+    gl.bindTexture(gl.TEXTURE_2D, turbTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, octavePixels);
+
+    gl.bindTexture(gl.TEXTURE_2D, graphTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, graphPixels);
 }
 
 //draw a frame
@@ -288,10 +408,10 @@ function render(){
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     //position camera 10 units back from origin
-    mv = lookAt(new vec4(0, 0, 5, 1), new vec4(0, 0, 0, 1), new vec4(0, 1, 0, 0));
+    let base = lookAt(new vec4(0, 0, 3, 1), new vec4(0, 0, 0, 1), new vec4(0, 1, 0, 0));
 
     //rotate if the user has been dragging the mouse around
-    mv = mv.mult(rotateY(yAngle).mult(rotateX(xAngle)));
+    mv = base.mult(rotateY(yAngle).mult(rotateX(xAngle)).mult(translate(-1.25,0,0)).mult(scalem(.6,.6,.6)));
 
     //send the modelview matrix over
     gl.uniformMatrix4fv(umv, false, mv.flatten());
@@ -300,11 +420,42 @@ function render(){
     //we could do this once since we only have one texture, but eventually you'll have multiple textures
     //so you'll be swapping them in and out for each object
     gl.activeTexture(gl.TEXTURE0); //we're using texture unit 0
-    gl.bindTexture(gl.TEXTURE_2D, checkerTex); //we want checkerTex on that texture unit
+    gl.bindTexture(gl.TEXTURE_2D, marbleTex); //we want marbleTex on that texture unit
     //when the shader runs, the sampler2D will want to know what texture unit the texture is on
     //It's on texture unit 0, so send over the value 0
     gl.uniform1i(uTextureSampler, 0);
 
     gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
 
+    mv = base.mult(rotateY(yAngle).mult(rotateX(xAngle)).mult(translate(1.25,0,0)).mult(scalem(.6,.6,.6)));
+
+    //send the modelview matrix over
+    gl.uniformMatrix4fv(umv, false, mv.flatten());
+
+    //make sure the appropriate texture is sitting on texture unit 0
+    //we could do this once since we only have one texture, but eventually you'll have multiple textures
+    //so you'll be swapping them in and out for each object
+    gl.activeTexture(gl.TEXTURE0); //we're using texture unit 0
+    gl.bindTexture(gl.TEXTURE_2D, graphTex); //we want marbleTex on that texture unit
+    //when the shader runs, the sampler2D will want to know what texture unit the texture is on
+    //It's on texture unit 0, so send over the value 0
+    gl.uniform1i(uTextureSampler, 0);
+
+    gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+
+    mv = base.mult(rotateY(yAngle).mult(rotateX(xAngle)).mult(translate(0,0,0)).mult(scalem(.6,.6,.6)));
+
+    //send the modelview matrix over
+    gl.uniformMatrix4fv(umv, false, mv.flatten());
+
+    //make sure the appropriate texture is sitting on texture unit 0
+    //we could do this once since we only have one texture, but eventually you'll have multiple textures
+    //so you'll be swapping them in and out for each object
+    gl.activeTexture(gl.TEXTURE0); //we're using texture unit 0
+    gl.bindTexture(gl.TEXTURE_2D, turbTex); //we want marbleTex on that texture unit
+    //when the shader runs, the sampler2D will want to know what texture unit the texture is on
+    //It's on texture unit 0, so send over the value 0
+    gl.uniform1i(uTextureSampler, 0);
+
+    gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
 }
